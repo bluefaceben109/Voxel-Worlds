@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Voxel Worlds - Full Browser Minecraft Clone</title>
+<style>
+body{margin:0;overflow:hidden;background:#87CEEB;}
+canvas{display:block;}
+#title{
+    position:absolute;
+    top:10px;
+    width:100%;
+    text-align:center;
+    font-size:32px;
+    color:yellow;
+    font-family:sans-serif;
+    text-shadow:2px 2px 5px black;
+}
+#info{
+    position:absolute;
+    top:50px;
+    left:10px;
+    color:white;
+    font-family:sans-serif;
+}
+#inventory{
+    position:absolute;
+    bottom:10px;
+    left:50%;
+    transform:translateX(-50%);
+    display:flex;
+    gap:5px;
+}
+.inventory-slot{
+    width:40px;
+    height:40px;
+    border:2px solid black;
+    background-size:cover;
+}
+.inventory-slot.selected{
+    border:2px solid yellow;
+}
+#health{
+    position:absolute;
+    top:10px;
+    left:10px;
+    color:red;
+    font-family:sans-serif;
+}
+#loot{
+    position:absolute;
+    bottom:60px;
+    left:50%;
+    transform:translateX(-50%);
+    color:white;
+    font-family:sans-serif;
+}
+</style>
+</head>
+<body>
+<div id="title">🌍 Voxel Worlds - Full Browser Minecraft Clone 🌍</div>
+<div id="info">Press F to fly | H to spawn Herobrine | E to craft | WASD to move | Space jump</div>
+<div id="health"></div>
+<div id="loot"></div>
+<div id="inventory"></div>
+<canvas id="gameCanvas"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js"></script>
+<script>
+// ================== THREE.JS SETUP ==================
+const scene = new THREE.Scene();
+let timeOfDay = 0;
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({canvas:document.getElementById("gameCanvas")});
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// ================== LIGHTS ==================
+const sunLight = new THREE.DirectionalLight(0xffffff,1);
+sunLight.position.set(10,20,10);
+scene.add(sunLight);
+const ambient = new THREE.AmbientLight(0x888888);
+scene.add(ambient);
+
+// ================== TEXTURES ==================
+const loader = new THREE.TextureLoader();
+const textures = {
+grass: loader.load("https://i.imgur.com/3d6hNQv.png"),
+dirt: loader.load("https://i.imgur.com/72kOeUp.png"),
+stone: loader.load("https://i.imgur.com/h0Uu6zD.png"),
+glow: loader.load("https://i.imgur.com/XQ1F7lU.png"),
+water: loader.load("https://i.imgur.com/eqsAtfX.png"),
+lava: loader.load("https://i.imgur.com/ujhS1Kq.png")
+};
+
+// ================== WORLD ==================
+const blockSize = 1;
+const world = new THREE.Group();
+scene.add(world);
+function addBlock(x,y,z,type){
+    const geometry = new THREE.BoxGeometry(blockSize,blockSize,blockSize);
+    const material = new THREE.MeshLambertMaterial({map:textures[type]});
+    const cube = new THREE.Mesh(geometry,material);
+    cube.position.set(x,y,z);
+    cube.blockType = type;
+    world.add(cube);
+    return cube;
+}
+function removeBlock(object){world.remove(object);}
+
+// ================== TERRAIN ==================
+for(let x=-15;x<=15;x++){
+    for(let z=-15;z<=15;z++){
+        let height = Math.floor(Math.random()*4);
+        for(let y=0;y<=height;y++){
+            let type = y===height?"grass":"dirt";
+            if(Math.random()<0.1) continue;
+            addBlock(x,y,z,type);
+        }
+        if(Math.random()<0.05) addBlock(x,0,z,"water");
+        if(Math.random()<0.02) addBlock(x,1,z,"lava");
+    }
+}
+
+// ================== PLAYER ==================
+const player={x:0,y:5,z:10,velocityY:0,speed:0.2,onGround:false,flying:false,health:100,inventory:{}};
+camera.position.set(player.x,player.y,player.z);
+const healthDiv = document.getElementById("health");
+const lootDiv = document.getElementById("loot");
+
+// ================== CONTROLS ==================
+const keys = {};
+document.addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
+document.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+
+// ================== MOUSE LOOK ==================
+let pitch = 0, yaw = 0;
+document.body.requestPointerLock = document.body.requestPointerLock||document.body.mozRequestPointerLock;
+document.addEventListener('click',()=>document.body.requestPointerLock());
+document.addEventListener('mousemove', e=>{
+    if(document.pointerLockElement === document.body){
+        yaw -= e.movementX*0.002;
+        pitch -= e.movementY*0.002;
+        pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+    }
+});
+
+// ================== INVENTORY ==================
+const inventorySlots = ["grass","dirt","stone","glow","water","lava"];
+let selectedIndex = 0;
+const inventoryDiv = document.getElementById("inventory");
+function updateInventory(){
+    inventoryDiv.innerHTML="";
+    inventorySlots.forEach((type,i)=>{
+        const slot = document.createElement("div");
+        slot.className = "inventory-slot";
+        if(i===selectedIndex) slot.classList.add("selected");
+        slot.style.backgroundImage = `url(${textures[type].image.src})`;
+        inventoryDiv.appendChild(slot);
+    });
+}
+updateInventory();
+document.addEventListener("wheel", e=>{
+    selectedIndex=(selectedIndex+(e.deltaY>0?1:-1)+inventorySlots.length)%inventorySlots.length;
+    updateInventory();
+});
+
+// ================== RAYCAST ==================
+const raycaster = new THREE.Raycaster();
+function interactBlock(button){
+    raycaster.setFromCamera(new THREE.Vector2(0,0),camera);
+    const intersects = raycaster.intersectObjects(world.children);
+    if(intersects.length>0){
+        const face = intersects[0].face;
+        const cube = intersects[0].object;
+        if(button===0){
+            addBlock(cube.position.x+face.normal.x, cube.position.y+face.normal.y, cube.position.z+face.normal.z, inventorySlots[selectedIndex]);
+        } else if(button===2){
+            removeBlock(cube);
+        }
+    }
+}
+window.addEventListener("mousedown", e=>interactBlock(e.button));
+window.addEventListener("contextmenu", e=>e.preventDefault());
+
+// ================== MOBS ==================
+let mobs = [];
+function spawnMob(x,y,z,color="red",size=0.5,speed=0.02){
+    const geometry = new THREE.SphereGeometry(size,8,8);
+    const material = new THREE.MeshBasicMaterial({color});
+    const mob = new THREE.Mesh(geometry,material);
+    mob.position.set(x,y,z);
+    mob.speed = speed;
+    mob.health = 10;
+    mob.stalker = false;
+    scene.add(mob);
+    mobs.push(mob);
+}
+
+function spawnHerobrine(x,y,z){
+    const geometry = new THREE.BoxGeometry(1,2,1);
+    const material = new THREE.MeshBasicMaterial({color:0xffffff});
+    const herobrine = new THREE.Mesh(geometry,material);
+    herobrine.position.set(x,y,z);
+    herobrine.speed = 0.02;
+    herobrine.health = 50;
+    herobrine.stalker = true;
+    herobrine.teleportCooldown = 0;
+    herobrine.jumpCooldown = 0;
+    scene.add(herobrine);
+    mobs.push(herobrine);
+}
+
+// spawn initial mobs
+spawnMob(5,1,5,"red",0.5,0.02);
+spawnMob(-7,1,3,"blue",0.7,0.01);
+spawnMob(3,1,-6,"green",0.4,0.03);
+
+// spawn herobrine
+document.addEventListener("keydown", e=>{
+    if(e.key.toLowerCase()==="h"){
+        spawnHerobrine(player.x+Math.random()*5-2,2,player.z+Math.random()*5-2);
+    }
+});
+
+// ================== DAY/NIGHT ==================
+function updateLighting(){
+    timeOfDay+=0.01;
+    if(timeOfDay>24) timeOfDay=0;
+    const brightness = Math.cos(timeOfDay/24*Math.PI*2)*0.5+0.5;
+    sunLight.intensity = brightness;
+    ambient.intensity = 0.2+brightness*0.8;
+    renderer.setClearColor(new THREE.Color(brightness*0.5+0.25,brightness*0.7+0.3,brightness));
+}
+
+// ================== CRAFTING ==================
+document.addEventListener("keydown", e=>{
+    if(e.key.toLowerCase()==="e"){
+        // example: 2 dirt + 2 stone = glow
+        if((player.inventory["dirt"]||0)>=2 && (player.inventory["stone"]||0)>=2){
+            player.inventory["dirt"]-=2;
+            player.inventory["stone"]-=2;
+            player.inventory["glow"] = (player.inventory["glow"]||0)+1;
+            lootDiv.textContent="Crafted 1 Glow Block!";
+            updateInventory();
+        } else {
+            lootDiv.textContent="Not enough materials!";
+        }
+    }
+});
+
+// ================== GAME LOOP ==================
+function animate(){
+    requestAnimationFrame(animate);
+    
+    // movement
+    let forward = Math.sin(yaw), right = Math.cos(yaw);
+    if(keys["w"]) player.x+=forward*player.speed,player.z+=-right*player.speed;
+    if(keys["s"]) player.x+=-forward*player.speed,player.z+=right*player.speed;
+    if(keys["a"]) player.x+=-right*player.speed,player.z+=-forward*player.speed;
+    if(keys["d"]) player.x+=right*player.speed,player.z+=forward*player.speed;
+
+    // flying
+    if(keys["f"]) player.flying=true;
+    if(keys["c"]) player.flying=false;
+    if(!player.flying){
+        player.velocityY-=0.01;
+        player.y+=player.velocityY;
+        if(player.y<2){player.y=2;player.velocityY=0;player.onGround=true;}
+        if(keys[" "] && player.onGround){player.velocityY=0.3;player.onGround=false;}
+    } else {
+        if(keys[" "]) player.y+=0.2;
+        if(keys["shift"]) player.y-=0.2;
+    }
+
+    // camera
+    camera.position.set(player.x,player.y,player.z);
+    const lookX=player.x+Math.sin(yaw)*Math.cos(pitch);
+    const lookY=player.y+Math.sin(pitch);
+    const lookZ=player.z-Math.cos(yaw)*Math.cos(pitch);
+    camera.lookAt(lookX,lookY,lookZ);
+
+    // mobs
+    mobs.forEach(m=>{
+        const dx=player.x-m.position.x;
+        const dz=player.z-m.position.z;
+        const dist=Math.sqrt(dx*dx+dz*dz);
+        if(m.stalker){
+            m.teleportCooldown--;
+            m.jumpCooldown--;
+            if(dist>10 && m.teleportCooldown<=0){
+                m.position.x=player.x+Math.random()*2-1;
+                m.position.z=player.z+Math.random()*2-1;
+                m.teleportCooldown=500;
+                // jump scare flash
+                document.body.style.background="red";
+                setTimeout(()=>{document.body.style.background="#87CEEB"},100);
+            }
+            m.position.x+=dx*m.speed;
+            m.position.z+=dz*m.speed;
+        } else {
+            if(dist>0.5){
+                m.position.x+=dx*m.speed;
+                m.position.z+=dz*m.speed;
+            }
+        }
+        if(dist<1) player.health-=0.2;
+    });
+
+    healthDiv.textContent=`Health: ${Math.max(0,Math.floor(player.health))}`;
+    
+    updateLighting();
+    renderer.render(scene,camera);
+}
+animate();
+
+// ================== RESIZE ==================
+window.addEventListener("resize", ()=>{
+    camera.aspect=window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth,window.innerHeight);
+});
+</script>
+</body>
+</html>
